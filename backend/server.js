@@ -17,8 +17,11 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
-const LEADS_FILE = path.join(__dirname, 'leads_db.json');
-const SETTINGS_FILE = path.join(__dirname, 'settings.json');
+// Vercel's filesystem is read-only except /tmp, and /tmp doesn't persist
+// across invocations or deployments — leads/settings will reset there.
+const DATA_DIR = process.env.VERCEL ? '/tmp' : __dirname;
+const LEADS_FILE = path.join(DATA_DIR, 'leads_db.json');
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
 
 // Initialize database files if they don't exist
 async function initDB() {
@@ -40,6 +43,15 @@ async function initDB() {
     await fs.writeFile(SETTINGS_FILE, JSON.stringify(defaultSettings, null, 2));
   }
 }
+
+// Initialize the data files once per cold start, and make every route wait
+// for it (req/write handlers below assume the files already exist).
+const dbReady = initDB().catch(err => {
+  console.error('Database initialization failed:', err);
+});
+app.use((req, res, next) => {
+  dbReady.then(() => next()).catch(next);
+});
 
 // Helper to read leads
 async function readLeads() {
@@ -415,11 +427,13 @@ app.post('/api/leads', async (req, res) => {
   res.json(lead);
 });
 
-// Start the database files initialization and then listen
-initDB().then(() => {
-  app.listen(PORT, () => {
-    console.log(`Backend server running on http://localhost:${PORT}`);
+// Start listening locally; on Vercel the app is exported as a function instead.
+if (!process.env.VERCEL) {
+  dbReady.then(() => {
+    app.listen(PORT, () => {
+      console.log(`Backend server running on http://localhost:${PORT}`);
+    });
   });
-}).catch(err => {
-  console.error('Database initialization failed:', err);
-});
+}
+
+export default app;
